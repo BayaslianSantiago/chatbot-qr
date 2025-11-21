@@ -1,7 +1,8 @@
 streamlit
 pandas
 openpyxl
-sentence-transformers
-scikit-learn
-numpy
+transformers
 torch
+sentencepiece
+protobuf
+accelerate
