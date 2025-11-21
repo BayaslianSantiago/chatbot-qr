@@ -1,0 +1,23 @@
+{
+  "negocio": {
+    "nombre": "Restaurante El Buen Sabor",
+    "emoji": "🍕",
+    "tagline": "La mejor comida italiana de la ciudad",
+    "logo": null
+  },
+  "colores": {
+    "primario": "#667eea",
+    "secundario": "#764ba2",
+    "fondo_usuario": "#667eea",
+    "fondo_bot": "#f1f3f4"
+  },
+  "mensajes": {
+    "bienvenida": "¡Hola! 👋 Bienvenido a Restaurante El Buen Sabor. ¿En qué puedo ayudarte hoy?",
+    "sugerencias": [
+      "📍 ¿Dónde están ubicados?",
+      "🕐 ¿Cuál es el horario?",
+      "🍝 ¿Qué platillos tienen?",
+      "📞 ¿Cómo hago una reserva?"
+    ]
+  }
+}
