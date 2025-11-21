@@ -1,351 +1,350 @@
 import streamlit as st
 import pandas as pd
-from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
-import torch
-import re
+from datetime import datetime
+import time
 
 # Configuración de la página
-st.set_page_config(page_title="Chatbot IA - Asistente Virtual", page_icon="🤖", layout="wide")
+st.set_page_config(
+    page_title="Asistente Virtual",
+    page_icon="💬",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
-# Inicializar el modelo conversacional
-@st.cache_resource
-def load_conversation_model():
-    """
-    Carga un modelo conversacional preentrenado.
-    Opciones disponibles:
-    - 'facebook/blenderbot-400M-distill' (inglés, ligero)
-    - 'google/flan-t5-base' (multilingüe, bueno para Q&A)
-    - 'Helsinki-NLP/opus-mt-en-es' (traducción)
-    """
-    try:
-        # Modelo conversacional ligero y efectivo
-        model_name = "google/flan-t5-base"
-        
-        # Cargar tokenizer y modelo
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        
-        # Crear pipeline
-        generator = pipeline(
-            "text2text-generation",
-            model=model,
-            tokenizer=tokenizer,
-            device=0 if torch.cuda.is_available() else -1
-        )
-        
-        return generator, tokenizer
-    except Exception as e:
-        st.error(f"Error al cargar el modelo: {e}")
-        return None, None
-
-generator, tokenizer = load_conversation_model()
-
-# Función para procesar el archivo Excel
-def procesar_excel(archivo):
-    """Procesa el archivo Excel y extrae información de forma genérica."""
-    try:
-        df = pd.read_excel(archivo)
-        
-        # Limpiar nombres de columnas
-        df.columns = df.columns.str.strip()
-        
-        st.sidebar.success(f"✅ Archivo cargado: {len(df)} filas")
-        st.sidebar.write("Columnas detectadas:", list(df.columns))
-        
-        return df
-    except Exception as e:
-        st.error(f"Error al procesar el archivo: {e}")
-        return None
-
-# Función para crear contexto desde el Excel
-def crear_contexto(df, col_pregunta, col_respuesta):
-    """Crea un contexto de conocimiento desde el DataFrame."""
-    if col_pregunta not in df.columns or col_respuesta not in df.columns:
-        st.error("Las columnas seleccionadas no existen en el archivo")
-        return None
+# CSS personalizado para look profesional
+st.markdown("""
+<style>
+    /* Ocultar elementos de Streamlit */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
     
-    # Limpiar datos nulos
-    df_limpio = df[[col_pregunta, col_respuesta]].dropna()
+    /* Fondo y estilo general */
+    .stApp {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
     
-    # Crear base de conocimiento en formato texto
-    conocimiento = []
-    for _, row in df_limpio.iterrows():
-        conocimiento.append({
-            'pregunta': str(row[col_pregunta]).strip(),
-            'respuesta': str(row[col_respuesta]).strip()
-        })
+    /* Container del chat */
+    .chat-container {
+        background: white;
+        border-radius: 20px;
+        padding: 20px;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        max-width: 600px;
+        margin: 20px auto;
+    }
     
-    return conocimiento
+    /* Header del negocio */
+    .business-header {
+        text-align: center;
+        padding: 20px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 15px;
+        color: white;
+        margin-bottom: 20px;
+    }
+    
+    .business-logo {
+        font-size: 50px;
+        margin-bottom: 10px;
+    }
+    
+    .business-name {
+        font-size: 24px;
+        font-weight: bold;
+        margin: 0;
+    }
+    
+    .business-tagline {
+        font-size: 14px;
+        opacity: 0.9;
+        margin-top: 5px;
+    }
+    
+    /* Mensajes */
+    .user-message {
+        background: #667eea;
+        color: white;
+        padding: 12px 16px;
+        border-radius: 18px 18px 4px 18px;
+        margin: 10px 0;
+        margin-left: 20%;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    
+    .bot-message {
+        background: #f1f3f4;
+        color: #333;
+        padding: 12px 16px;
+        border-radius: 18px 18px 18px 4px;
+        margin: 10px 0;
+        margin-right: 20%;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    }
+    
+    .message-time {
+        font-size: 10px;
+        opacity: 0.6;
+        margin-top: 4px;
+    }
+    
+    /* Botones de sugerencias */
+    .suggestion-btn {
+        background: white;
+        border: 2px solid #667eea;
+        color: #667eea;
+        padding: 10px 20px;
+        border-radius: 20px;
+        margin: 5px;
+        cursor: pointer;
+        display: inline-block;
+        font-size: 14px;
+    }
+    
+    /* Input personalizado */
+    .stTextInput input {
+        border-radius: 25px;
+        border: 2px solid #e0e0e0;
+        padding: 12px 20px;
+    }
+    
+    /* Typing indicator */
+    .typing-indicator {
+        display: inline-block;
+        padding: 10px;
+    }
+    
+    .typing-indicator span {
+        height: 8px;
+        width: 8px;
+        background-color: #667eea;
+        border-radius: 50%;
+        display: inline-block;
+        margin: 0 2px;
+        animation: bounce 1.4s infinite ease-in-out both;
+    }
+    
+    .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+    .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+    
+    @keyframes bounce {
+        0%, 80%, 100% { transform: scale(0); }
+        40% { transform: scale(1); }
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# Función para buscar en la base de conocimiento
-def buscar_en_base(pregunta, conocimiento):
-    """Busca respuestas relevantes en la base de conocimiento."""
-    pregunta_lower = pregunta.lower()
-    resultados = []
-    
-    for item in conocimiento:
-        pregunta_base = item['pregunta'].lower()
-        
-        # Buscar coincidencias de palabras clave
-        palabras_pregunta = set(pregunta_lower.split())
-        palabras_base = set(pregunta_base.split())
-        
-        # Calcular similitud simple por palabras comunes
-        coincidencias = len(palabras_pregunta.intersection(palabras_base))
-        
-        if coincidencias > 0 or pregunta_lower in pregunta_base or pregunta_base in pregunta_lower:
-            resultados.append({
-                'pregunta': item['pregunta'],
-                'respuesta': item['respuesta'],
-                'score': coincidencias
-            })
-    
-    # Ordenar por score
-    resultados.sort(key=lambda x: x['score'], reverse=True)
-    
-    return resultados[:3]  # Top 3 resultados
+# Inicializar sesión
+if 'mensajes' not in st.session_state:
+    st.session_state.mensajes = []
+    st.session_state.primera_visita = True
 
-# Función para generar respuesta con el modelo
-def generar_respuesta(pregunta, contexto_relevante):
-    """Genera una respuesta usando el modelo conversacional."""
-    if not generator:
-        return "El modelo no está disponible. Por favor, recarga la página."
+if 'info_negocio' not in st.session_state:
+    st.session_state.info_negocio = {
+        'nombre': 'Mi Negocio',
+        'emoji': '🏪',
+        'tagline': 'Estamos aquí para ayudarte',
+        'activo': False
+    }
+
+# Sidebar para configuración del negocio (admin)
+with st.sidebar:
+    st.title("⚙️ Panel de Administración")
+    st.markdown("---")
     
-    # Si hay contexto relevante, usarlo
-    if contexto_relevante:
-        # Construir prompt con contexto
-        contexto_texto = "\n".join([f"P: {r['pregunta']}\nR: {r['respuesta']}" for r in contexto_relevante])
-        
-        prompt = f"""Basándote en la siguiente información, responde la pregunta del usuario de manera clara y concisa.
+    st.subheader("Información del Negocio")
+    
+    nombre_negocio = st.text_input(
+        "Nombre del negocio:",
+        value=st.session_state.info_negocio['nombre'],
+        placeholder="Ej: Restaurante El Buen Sabor"
+    )
+    
+    emoji_negocio = st.text_input(
+        "Emoji/Ícono:",
+        value=st.session_state.info_negocio['emoji'],
+        placeholder="🍕 🏪 ☕ 💼"
+    )
+    
+    tagline = st.text_input(
+        "Mensaje de bienvenida:",
+        value=st.session_state.info_negocio['tagline'],
+        placeholder="Tu satisfacción es nuestra prioridad"
+    )
+    
+    if st.button("💾 Guardar Configuración"):
+        st.session_state.info_negocio = {
+            'nombre': nombre_negocio,
+            'emoji': emoji_negocio,
+            'tagline': tagline,
+            'activo': True
+        }
+        st.success("✅ Configuración guardada!")
+    
+    st.markdown("---")
+    st.subheader("📊 Base de Conocimiento")
+    
+    archivo_subido = st.file_uploader(
+        "Subir Excel con información:",
+        type=['xlsx', 'xls'],
+        help="Formato: Pregunta | Respuesta"
+    )
+    
+    if archivo_subido:
+        try:
+            df = pd.read_excel(archivo_subido)
+            st.success(f"✅ {len(df)} entradas cargadas")
+            
+            # Guardar en sesión
+            if 'base_conocimiento' not in st.session_state:
+                st.session_state.base_conocimiento = df
+            
+            with st.expander("Ver datos"):
+                st.dataframe(df.head())
+        except Exception as e:
+            st.error(f"Error: {e}")
+    
+    st.markdown("---")
+    
+    if st.button("🔄 Reiniciar Chat"):
+        st.session_state.mensajes = []
+        st.session_state.primera_visita = True
+        st.rerun()
+    
+    st.markdown("---")
+    st.caption("💡 Vista de cliente: Colapsa este panel")
 
-Información disponible:
-{contexto_texto}
+# ==== INTERFAZ PRINCIPAL (Lo que ve el cliente) ====
 
-Pregunta del usuario: {pregunta}
+# Header del negocio
+info = st.session_state.info_negocio
 
-Respuesta:"""
+st.markdown(f"""
+<div class="business-header">
+    <div class="business-logo">{info['emoji']}</div>
+    <h1 class="business-name">{info['nombre']}</h1>
+    <p class="business-tagline">{info['tagline']}</p>
+</div>
+""", unsafe_allow_html=True)
+
+# Mensaje de bienvenida automático
+if st.session_state.primera_visita:
+    st.session_state.mensajes.append({
+        'tipo': 'bot',
+        'contenido': f"¡Hola! 👋 Bienvenido a {info['nombre']}. Soy tu asistente virtual y estoy aquí para ayudarte. ¿En qué puedo asistirte hoy?",
+        'hora': datetime.now().strftime("%H:%M")
+    })
+    st.session_state.primera_visita = False
+
+# Área de mensajes
+st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
+
+# Mostrar mensajes
+for msg in st.session_state.mensajes:
+    if msg['tipo'] == 'usuario':
+        st.markdown(f"""
+        <div class="user-message">
+            {msg['contenido']}
+            <div class="message-time">{msg['hora']}</div>
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        # Pregunta directa sin contexto
-        prompt = f"Responde esta pregunta de manera útil: {pregunta}"
+        st.markdown(f"""
+        <div class="bot-message">
+            {msg['contenido']}
+            <div class="message-time">{msg['hora']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# Sugerencias rápidas (opcional)
+if len(st.session_state.mensajes) <= 1:
+    st.markdown("### 💡 Preguntas frecuentes:")
     
-    try:
-        # Generar respuesta
-        respuesta = generator(
-            prompt,
-            max_length=200,
-            min_length=20,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9,
-            num_return_sequences=1
-        )
-        
-        return respuesta[0]['generated_text'].strip()
-    except Exception as e:
-        return f"Error al generar respuesta: {e}"
-
-# Título de la aplicación
-st.title("🤖 Chatbot IA - Asistente Conversacional")
-st.markdown("### Powered by FLAN-T5 - Modelo conversacional preentrenado")
-
-# Sidebar para configuración
-st.sidebar.header("⚙️ Configuración")
-
-# Información del modelo
-with st.sidebar.expander("ℹ️ Sobre el modelo"):
-    st.markdown("""
-    **Modelo:** Google FLAN-T5 Base
+    col1, col2 = st.columns(2)
     
-    - ✅ Entrenado en conversaciones
-    - ✅ Entiende contexto
-    - ✅ Genera respuestas naturales
-    - ✅ Multilingüe (incluye español)
-    - ✅ Sin APIs externas
-    """)
-
-# Cargar archivo Excel
-archivo_subido = st.sidebar.file_uploader(
-    "Sube tu archivo Excel (.xlsx, .xls)",
-    type=['xlsx', 'xls'],
-    help="El archivo debe contener preguntas/temas y respuestas"
-)
-
-# Inicializar variables de sesión
-if 'historial' not in st.session_state:
-    st.session_state.historial = []
-
-if 'conocimiento' not in st.session_state:
-    st.session_state.conocimiento = None
-
-# Procesar archivo si se cargó
-if archivo_subido is not None:
-    df = procesar_excel(archivo_subido)
+    sugerencias = [
+        "📍 ¿Dónde están ubicados?",
+        "🕐 ¿Cuál es el horario?",
+        "💰 ¿Cuáles son los precios?",
+        "📞 ¿Cómo los contacto?"
+    ]
     
-    if df is not None:
-        # Seleccionar columnas
-        st.sidebar.subheader("Selecciona las columnas:")
-        
-        columnas = list(df.columns)
-        
-        col_pregunta = st.sidebar.selectbox(
-            "Columna de Preguntas/Temas:",
-            columnas,
-            index=0,
-            help="Columna que contiene las preguntas o temas"
-        )
-        
-        col_respuesta = st.sidebar.selectbox(
-            "Columna de Respuestas/Información:",
-            columnas,
-            index=1 if len(columnas) > 1 else 0,
-            help="Columna que contiene las respuestas o información"
-        )
-        
-        # Botón para procesar
-        if st.sidebar.button("🚀 Activar Chatbot"):
-            with st.spinner("Procesando base de conocimiento..."):
-                conocimiento = crear_contexto(df, col_pregunta, col_respuesta)
+    for i, sugerencia in enumerate(sugerencias):
+        col = col1 if i % 2 == 0 else col2
+        with col:
+            if st.button(sugerencia, key=f"sug_{i}", use_container_width=True):
+                # Agregar como mensaje del usuario
+                st.session_state.mensajes.append({
+                    'tipo': 'usuario',
+                    'contenido': sugerencia,
+                    'hora': datetime.now().strftime("%H:%M")
+                })
                 
-                if conocimiento:
-                    st.session_state.conocimiento = conocimiento
-                    st.sidebar.success(f"✅ ¡Chatbot activado con {len(conocimiento)} entradas!")
-                    st.balloons()
+                # Respuesta automática (aquí irá la IA después)
+                respuesta = f"Gracias por tu pregunta sobre: {sugerencia}. Pronto conectaré esta respuesta con nuestra base de datos."
+                
+                st.session_state.mensajes.append({
+                    'tipo': 'bot',
+                    'contenido': respuesta,
+                    'hora': datetime.now().strftime("%H:%M")
+                })
+                st.rerun()
 
-# Configuraciones adicionales
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎛️ Parámetros")
+st.markdown("</div>", unsafe_allow_html=True)
 
-usar_contexto = st.sidebar.checkbox(
-    "Usar base de conocimiento",
-    value=True,
-    help="Si está activado, el chatbot buscará primero en tu Excel"
-)
-
-modo_conversacion = st.sidebar.radio(
-    "Modo de respuesta:",
-    ["Con contexto (recomendado)", "Solo modelo IA", "Híbrido"],
-    help="Híbrido combina búsqueda en Excel + generación IA"
-)
-
-# Mostrar preview de datos
-if archivo_subido is not None and df is not None:
-    with st.expander("📊 Vista previa de los datos"):
-        st.dataframe(df.head(10))
-        st.info(f"Total de registros: {len(df)}")
-
-# Área de chat
+# Input del usuario
 st.markdown("---")
 
-# Verificar si el modelo está cargado
-if generator is not None:
-    st.success("✅ Modelo conversacional cargado - ¡Hazme una pregunta!")
-    
-    # Formulario de chat
-    with st.form(key='chat_form', clear_on_submit=True):
-        col1, col2 = st.columns([6, 1])
-        
-        with col1:
-            pregunta = st.text_input(
-                "Tu pregunta:",
-                placeholder="¿En qué puedo ayudarte hoy?",
-                label_visibility="collapsed"
-            )
-        
-        with col2:
-            submit = st.form_submit_button("Enviar", use_container_width=True)
-    
-    # Procesar pregunta
-    if submit and pregunta:
-        # Agregar pregunta al historial
-        st.session_state.historial.append({"role": "user", "content": pregunta})
-        
-        with st.spinner("Pensando..."):
-            # Buscar en base de conocimiento si existe
-            contexto_relevante = []
-            if usar_contexto and st.session_state.conocimiento:
-                contexto_relevante = buscar_en_base(pregunta, st.session_state.conocimiento)
-            
-            # Generar respuesta según el modo
-            if modo_conversacion == "Con contexto (recomendado)" and contexto_relevante:
-                # Respuesta directa del Excel si hay coincidencia exacta
-                respuesta = contexto_relevante[0]['respuesta']
-                tipo_respuesta = "📚 Base de conocimiento"
-            elif modo_conversacion == "Solo modelo IA":
-                # Solo usar el modelo
-                respuesta = generar_respuesta(pregunta, [])
-                tipo_respuesta = "🤖 Generado por IA"
-            else:
-                # Modo híbrido: combinar contexto + modelo
-                respuesta = generar_respuesta(pregunta, contexto_relevante)
-                tipo_respuesta = "🔄 Híbrido (Contexto + IA)"
-            
-            # Agregar respuesta al historial
-            st.session_state.historial.append({
-                "role": "assistant",
-                "content": respuesta,
-                "tipo": tipo_respuesta,
-                "contexto": len(contexto_relevante) > 0
-            })
-    
-    # Mostrar historial de chat
-    st.markdown("### 💬 Conversación")
-    
-    if not st.session_state.historial:
-        st.info("👋 ¡Hola! Soy tu asistente virtual. Hazme cualquier pregunta.")
-    
-    for mensaje in st.session_state.historial:
-        if mensaje["role"] == "user":
-            with st.chat_message("user", avatar="👤"):
-                st.write(mensaje["content"])
-        else:
-            with st.chat_message("assistant", avatar="🤖"):
-                st.write(mensaje["content"])
-                st.caption(mensaje.get("tipo", ""))
-    
-    # Botones de control
-    col1, col2 = st.columns([1, 5])
-    with col1:
-        if st.button("🗑️ Limpiar chat"):
-            st.session_state.historial = []
-            st.rerun()
+col1, col2 = st.columns([5, 1])
 
-else:
-    st.error("❌ Error al cargar el modelo conversacional. Verifica las dependencias.")
+with col1:
+    mensaje_usuario = st.text_input(
+        "Escribe tu mensaje...",
+        placeholder="Escribe tu pregunta aquí...",
+        label_visibility="collapsed",
+        key="input_mensaje"
+    )
 
-# Instrucciones
-with st.expander("📖 ¿Cómo funciona este chatbot?"):
-    st.markdown("""
-    ### 🎯 **Modos de operación:**
+with col2:
+    enviar = st.button("Enviar", use_container_width=True, type="primary")
+
+# Procesar mensaje
+if enviar and mensaje_usuario:
+    # Agregar mensaje del usuario
+    st.session_state.mensajes.append({
+        'tipo': 'usuario',
+        'contenido': mensaje_usuario,
+        'hora': datetime.now().strftime("%H:%M")
+    })
     
-    1. **Con contexto (recomendado):**
-       - Busca primero en tu base de datos Excel
-       - Responde directamente si encuentra coincidencias
-       - Rápido y preciso para info específica
+    # Simular "escribiendo..." (después aquí irá la IA)
+    with st.spinner("Escribiendo..."):
+        time.sleep(1)
+        
+        # Respuesta placeholder (aquí conectarás la IA)
+        respuesta_bot = "Gracias por tu mensaje. Estoy en desarrollo y pronto podré responderte con información precisa sobre nuestro negocio. 🤖"
+        
+        # Si hay base de conocimiento, intentar buscar
+        if 'base_conocimiento' in st.session_state:
+            df = st.session_state.base_conocimiento
+            # Búsqueda simple (mejorarás esto con IA)
+            resultados = df[df.iloc[:, 0].str.contains(mensaje_usuario, case=False, na=False)]
+            
+            if not resultados.empty:
+                respuesta_bot = resultados.iloc[0, 1]  # Primera respuesta encontrada
     
-    2. **Solo modelo IA:**
-       - Usa únicamente el modelo FLAN-T5
-       - Genera respuestas conversacionales
-       - Ideal para preguntas generales
+    st.session_state.mensajes.append({
+        'tipo': 'bot',
+        'contenido': respuesta_bot,
+        'hora': datetime.now().strftime("%H:%M")
+    })
     
-    3. **Híbrido:**
-       - Combina búsqueda en Excel + generación IA
-       - El modelo reformula y enriquece las respuestas del Excel
-       - Balance perfecto entre precisión y naturalidad
-    
-    ### 📋 **Formato Excel recomendado:**
-    
-    | Pregunta | Respuesta |
-    |----------|-----------|
-    | ¿Cuál es el horario? | Lunes a viernes 9-18h |
-    | ¿Dónde están ubicados? | Av. Principal 123 |
-    
-    ### 💡 **Ventajas:**
-    - ✅ Modelo conversacional preentrenado (FLAN-T5)
-    - ✅ Sin APIs externas ni costos adicionales
-    - ✅ Funciona offline después de la primera carga
-    - ✅ Genera respuestas naturales y contextuales
-    """)
+    st.rerun()
 
 # Footer
 st.markdown("---")
-st.caption("🤖 Chatbot con Google FLAN-T5 | Modelo conversacional preentrenado | Sin APIs externas")
+st.markdown("""
+<div style='text-align: center; opacity: 0.6; font-size: 12px;'>
+    Powered by Asistente Virtual IA • Desarrollado para tu negocio
+</div>
+""", unsafe_allow_html=True)
