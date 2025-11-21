@@ -62,6 +62,19 @@ def cargar_base_conocimiento():
         st.error(f"Error al cargar base de conocimiento: {e}")
         return None
 
+@st.cache_data
+def cargar_productos():
+    """Carga el catálogo de productos desde productos.xlsx"""
+    try:
+        df = pd.read_excel('productos.xlsx')
+        return df
+    except FileNotFoundError:
+        st.warning("⚠️ No se encontró productos.xlsx")
+        return None
+    except Exception as e:
+        st.error(f"Error al cargar productos: {e}")
+        return None
+
 def cargar_logo():
     """Carga el logo desde la carpeta assets/"""
     logo_path = 'assets/logo.png'
