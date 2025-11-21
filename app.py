@@ -8,7 +8,7 @@ st.set_page_config(
     page_title="Asistente Virtual",
     page_icon="💬",
     layout="centered",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"  # Cambiado a expanded
 )
 
 # CSS personalizado para look profesional
