@@ -5,6 +5,8 @@ import time
 import json
 import os
 from pathlib import Path
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+import torch
 
 # Configuración de la página
 st.set_page_config(
@@ -13,6 +15,23 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="collapsed"
 )
+
+# ===== CARGAR MODELO DE IA =====
+
+@st.cache_resource
+def cargar_modelo_ia():
+    """Carga un modelo conversacional ligero para generar respuestas"""
+    try:
+        # Usar modelo ligero y eficiente
+        model_name = "microsoft/DialoGPT-medium"
+        
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name)
+        
+        return tokenizer, model
+    except Exception as e:
+        st.error(f"Error al cargar modelo IA: {e}")
+        return None, None
 
 # ===== FUNCIONES DE CARGA DE CONFIGURACIÓN =====
 
@@ -46,6 +65,10 @@ def cargar_configuracion():
                     '💰 ¿Cuáles son los precios?',
                     '📞 ¿Cómo los contacto?'
                 ]
+            },
+            'ia': {
+                'habilitada': True,
+                'modo': 'hibrido'
             }
         }
 
@@ -85,12 +108,15 @@ def cargar_logo():
 # ===== CARGAR CONFIGURACIONES =====
 config = cargar_configuracion()
 base_conocimiento = cargar_base_conocimiento()
+productos = cargar_productos()
 logo_path = cargar_logo()
+tokenizer, modelo_ia = cargar_modelo_ia()
 
 # Extraer configuraciones
 negocio = config['negocio']
 colores = config['colores']
 mensajes_config = config['mensajes']
+ia_config = config.get('ia', {'habilitada': True, 'modo': 'hibrido'})
 
 # CSS personalizado con colores dinámicos
 st.markdown(f"""
@@ -201,6 +227,134 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
+# ===== FUNCIONES DE IA Y BÚSQUEDA =====
+
+def crear_contexto_negocio():
+    """Crea un contexto resumido del negocio con toda la información disponible"""
+    contexto = f"Información sobre {negocio['nombre']}:\n\n"
+    
+    # Agregar información general
+    if base_conocimiento is not None and not base_conocimiento.empty:
+        contexto += "Información general:\n"
+        for idx, row in base_conocimiento.head(10).iterrows():
+            contexto += f"- {row.iloc[0]}: {row.iloc[1]}\n"
+        contexto += "\n"
+    
+    # Agregar productos
+    if productos is not None and not productos.empty:
+        contexto += "Productos disponibles:\n"
+        for idx, row in productos.head(10).iterrows():
+            contexto += f"- {row.iloc[0]}"
+            if len(row) > 1 and pd.notna(row.iloc[1]):
+                contexto += f" (Precio: {row.iloc[1]})"
+            contexto += "\n"
+    
+    return contexto
+
+def buscar_en_base_datos(pregunta):
+    """Busca información relevante en las bases de datos"""
+    info_relevante = []
+    pregunta_lower = pregunta.lower()
+    
+    # Buscar en base de conocimiento
+    if base_conocimiento is not None:
+        for idx, row in base_conocimiento.iterrows():
+            pregunta_base = str(row.iloc[0]).lower()
+            if any(palabra in pregunta_base for palabra in pregunta_lower.split()):
+                info_relevante.append(f"• {row.iloc[0]}: {row.iloc[1]}")
+    
+    # Buscar en productos
+    if productos is not None:
+        for idx, row in productos.iterrows():
+            nombre_producto = str(row.iloc[0]).lower()
+            if nombre_producto in pregunta_lower or any(palabra in nombre_producto for palabra in pregunta_lower.split()):
+                producto_info = f"• {row.iloc[0]}"
+                if len(row) > 1:
+                    producto_info += f" - Precio: {row.iloc[1]}"
+                if len(row) > 2:
+                    producto_info += f" - {df.columns[2]}: {row.iloc[2]}"
+                info_relevante.append(producto_info)
+    
+    return info_relevante[:5]  # Máximo 5 resultados relevantes
+
+def generar_respuesta_ia(pregunta, info_relevante, historial_reciente):
+    """Genera una respuesta usando el modelo de IA con contexto"""
+    
+    if not ia_config['habilitada'] or tokenizer is None or modelo_ia is None:
+        # Si IA no está disponible, usar respuesta directa
+        if info_relevante:
+            return "\n".join(info_relevante)
+        return "Lo siento, no encontré información específica sobre eso. ¿Puedes ser más específico?"
+    
+    try:
+        # Construir prompt con contexto
+        contexto = crear_contexto_negocio()
+        
+        if info_relevante:
+            contexto += "\nInformación relevante para esta pregunta:\n"
+            contexto += "\n".join(info_relevante)
+        
+        # Prompt estructurado
+        prompt = f"""Como asistente virtual de {negocio['nombre']}, responde de manera amigable y útil.
+
+{contexto}
+
+Usuario: {pregunta}
+Asistente:"""
+        
+        # Generar respuesta con el modelo
+        inputs = tokenizer.encode(prompt, return_tensors="pt", max_length=512, truncation=True)
+        
+        # Generar con parámetros controlados
+        outputs = modelo_ia.generate(
+            inputs,
+            max_length=inputs.shape[1] + 100,
+            min_length=inputs.shape[1] + 20,
+            temperature=0.7,
+            top_p=0.9,
+            do_sample=True,
+            pad_token_id=tokenizer.eos_token_id,
+            no_repeat_ngram_size=3
+        )
+        
+        respuesta = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Extraer solo la respuesta del asistente
+        if "Asistente:" in respuesta:
+            respuesta = respuesta.split("Asistente:")[-1].strip()
+        
+        # Si la respuesta es muy corta o genérica, complementar con info relevante
+        if len(respuesta) < 30 and info_relevante:
+            respuesta = "Te comparto esta información:\n\n" + "\n".join(info_relevante)
+        
+        return respuesta
+        
+    except Exception as e:
+        # Fallback a respuesta directa
+        if info_relevante:
+            return "Encontré esta información que puede ayudarte:\n\n" + "\n".join(info_relevante)
+        return "Disculpa, tuve un problema al procesar tu pregunta. ¿Podrías reformularla?"
+
+def procesar_consulta(pregunta, historial):
+    """Procesa la consulta del usuario con IA"""
+    
+    # Buscar información relevante en las bases de datos
+    info_relevante = buscar_en_base_datos(pregunta)
+    
+    # Obtener historial reciente (últimos 3 mensajes)
+    historial_reciente = historial[-6:] if len(historial) > 6 else historial
+    
+    # Generar respuesta con IA
+    respuesta = generar_respuesta_ia(pregunta, info_relevante, historial_reciente)
+    
+    return respuesta
+
+# Función para convertir imagen a base64
+def get_image_base64(image_path):
+    import base64
+    with open(image_path, "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode()
+
 # Inicializar sesión
 if 'mensajes' not in st.session_state:
     st.session_state.mensajes = []
@@ -227,12 +381,6 @@ else:
         <p class="business-tagline">{negocio['tagline']}</p>
     </div>
     """, unsafe_allow_html=True)
-
-# Función para convertir imagen a base64
-def get_image_base64(image_path):
-    import base64
-    with open(image_path, "rb") as img_file:
-        return base64.b64encode(img_file.read()).decode()
 
 # Mensaje de bienvenida automático
 if st.session_state.primera_visita:
@@ -280,8 +428,8 @@ if len(st.session_state.mensajes) <= 1 and mensajes_config['sugerencias']:
                     'hora': datetime.now().strftime("%H:%M")
                 })
                 
-                # Buscar respuesta en base de conocimiento
-                respuesta = buscar_respuesta(sugerencia, base_conocimiento)
+                # Procesar con IA
+                respuesta = procesar_consulta(sugerencia, st.session_state.mensajes)
                 
                 st.session_state.mensajes.append({
                     'tipo': 'bot',
@@ -291,39 +439,6 @@ if len(st.session_state.mensajes) <= 1 and mensajes_config['sugerencias']:
                 st.rerun()
 
 st.markdown("</div>", unsafe_allow_html=True)
-
-# Función de búsqueda simple
-def buscar_respuesta(pregunta, df):
-    """Busca una respuesta en la base de conocimiento"""
-    if df is None or df.empty:
-        return "Disculpa, aún estoy aprendiendo. Por favor, intenta con otra pregunta o contacta directamente con el negocio."
-    
-    try:
-        # Búsqueda simple en la primera columna
-        pregunta_lower = pregunta.lower()
-        
-        for idx, row in df.iterrows():
-            pregunta_base = str(row.iloc[0]).lower()
-            
-            # Buscar coincidencias
-            if pregunta_lower in pregunta_base or pregunta_base in pregunta_lower:
-                return str(row.iloc[1])
-        
-        # Si no encuentra coincidencia exacta, buscar palabras clave
-        palabras_pregunta = set(pregunta_lower.split())
-        
-        for idx, row in df.iterrows():
-            pregunta_base = str(row.iloc[0]).lower()
-            palabras_base = set(pregunta_base.split())
-            
-            # Si hay al menos 2 palabras en común
-            if len(palabras_pregunta.intersection(palabras_base)) >= 2:
-                return str(row.iloc[1])
-        
-        return "No encontré información específica sobre eso. ¿Podrías reformular tu pregunta o elegir una de las opciones sugeridas?"
-    
-    except Exception as e:
-        return f"Disculpa, ocurrió un error. Por favor intenta nuevamente."
 
 # Input del usuario
 st.markdown("---")
@@ -350,10 +465,9 @@ if enviar and mensaje_usuario:
         'hora': datetime.now().strftime("%H:%M")
     })
     
-    # Buscar respuesta
-    with st.spinner("Escribiendo..."):
-        time.sleep(0.5)  # Simular pensamiento
-        respuesta_bot = buscar_respuesta(mensaje_usuario, base_conocimiento)
+    # Generar respuesta con IA
+    with st.spinner("Pensando..."):
+        respuesta_bot = procesar_consulta(mensaje_usuario, st.session_state.mensajes)
     
     st.session_state.mensajes.append({
         'tipo': 'bot',
@@ -365,8 +479,15 @@ if enviar and mensaje_usuario:
 
 # Footer
 st.markdown("---")
-st.markdown(f"""
-<div style='text-align: center; opacity: 0.6; font-size: 12px;'>
-    Powered by {negocio['nombre']} • Asistente Virtual IA
-</div>
-""", unsafe_allow_html=True)
+if ia_config['habilitada']:
+    st.markdown(f"""
+    <div style='text-align: center; opacity: 0.6; font-size: 12px;'>
+        🤖 Powered by {negocio['nombre']} • Asistente con IA
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown(f"""
+    <div style='text-align: center; opacity: 0.6; font-size: 12px;'>
+        Powered by {negocio['nombre']} • Asistente Virtual
+    </div>
+    """, unsafe_allow_html=True)
