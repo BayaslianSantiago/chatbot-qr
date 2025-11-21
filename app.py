@@ -1,30 +1,54 @@
 import streamlit as st
 import pandas as pd
-from sentence_transformers import SentenceTransformer
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-import io
+from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+import torch
+import re
 
 # Configuración de la página
 st.set_page_config(page_title="Chatbot IA - Asistente Virtual", page_icon="🤖", layout="wide")
 
-# Inicializar el modelo de embeddings (se carga una sola vez)
+# Inicializar el modelo conversacional
 @st.cache_resource
-def load_model():
-    return SentenceTransformer('all-MiniLM-L6-v2')
+def load_conversation_model():
+    """
+    Carga un modelo conversacional preentrenado.
+    Opciones disponibles:
+    - 'facebook/blenderbot-400M-distill' (inglés, ligero)
+    - 'google/flan-t5-base' (multilingüe, bueno para Q&A)
+    - 'Helsinki-NLP/opus-mt-en-es' (traducción)
+    """
+    try:
+        # Modelo conversacional ligero y efectivo
+        model_name = "google/flan-t5-base"
+        
+        # Cargar tokenizer y modelo
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        
+        # Crear pipeline
+        generator = pipeline(
+            "text2text-generation",
+            model=model,
+            tokenizer=tokenizer,
+            device=0 if torch.cuda.is_available() else -1
+        )
+        
+        return generator, tokenizer
+    except Exception as e:
+        st.error(f"Error al cargar el modelo: {e}")
+        return None, None
 
-model = load_model()
+generator, tokenizer = load_conversation_model()
 
 # Función para procesar el archivo Excel
 def procesar_excel(archivo):
-    """
-    Procesa el archivo Excel y extrae información de forma genérica.
-    Asume que tiene columnas con preguntas/temas y respuestas/información.
-    """
+    """Procesa el archivo Excel y extrae información de forma genérica."""
     try:
         df = pd.read_excel(archivo)
         
-        # Mostrar las columnas disponibles
+        # Limpiar nombres de columnas
+        df.columns = df.columns.str.strip()
+        
         st.sidebar.success(f"✅ Archivo cargado: {len(df)} filas")
         st.sidebar.write("Columnas detectadas:", list(df.columns))
         
@@ -33,81 +57,125 @@ def procesar_excel(archivo):
         st.error(f"Error al procesar el archivo: {e}")
         return None
 
-# Función para crear la base de conocimiento
-def crear_base_conocimiento(df, col_pregunta, col_respuesta):
-    """
-    Crea una base de conocimiento combinando preguntas y respuestas.
-    """
+# Función para crear contexto desde el Excel
+def crear_contexto(df, col_pregunta, col_respuesta):
+    """Crea un contexto de conocimiento desde el DataFrame."""
     if col_pregunta not in df.columns or col_respuesta not in df.columns:
         st.error("Las columnas seleccionadas no existen en el archivo")
-        return None, None
+        return None
     
     # Limpiar datos nulos
     df_limpio = df[[col_pregunta, col_respuesta]].dropna()
     
-    # Crear textos combinados para mejor contexto
-    textos = []
+    # Crear base de conocimiento en formato texto
+    conocimiento = []
     for _, row in df_limpio.iterrows():
-        texto_combinado = f"Pregunta: {row[col_pregunta]} Respuesta: {row[col_respuesta]}"
-        textos.append(texto_combinado)
+        conocimiento.append({
+            'pregunta': str(row[col_pregunta]).strip(),
+            'respuesta': str(row[col_respuesta]).strip()
+        })
     
-    # Generar embeddings
-    embeddings = model.encode(textos)
-    
-    return textos, embeddings, df_limpio
+    return conocimiento
 
-# Función para buscar la mejor respuesta
-def buscar_respuesta(pregunta_usuario, textos, embeddings, df_limpio, col_respuesta, top_k=3):
-    """
-    Busca las respuestas más relevantes usando similitud coseno.
-    """
-    # Generar embedding de la pregunta del usuario
-    pregunta_embedding = model.encode([pregunta_usuario])
+# Función para buscar en la base de conocimiento
+def buscar_en_base(pregunta, conocimiento):
+    """Busca respuestas relevantes en la base de conocimiento."""
+    pregunta_lower = pregunta.lower()
+    resultados = []
     
-    # Calcular similitudes
-    similitudes = cosine_similarity(pregunta_embedding, embeddings)[0]
+    for item in conocimiento:
+        pregunta_base = item['pregunta'].lower()
+        
+        # Buscar coincidencias de palabras clave
+        palabras_pregunta = set(pregunta_lower.split())
+        palabras_base = set(pregunta_base.split())
+        
+        # Calcular similitud simple por palabras comunes
+        coincidencias = len(palabras_pregunta.intersection(palabras_base))
+        
+        if coincidencias > 0 or pregunta_lower in pregunta_base or pregunta_base in pregunta_lower:
+            resultados.append({
+                'pregunta': item['pregunta'],
+                'respuesta': item['respuesta'],
+                'score': coincidencias
+            })
     
-    # Obtener los índices de las top_k respuestas más similares
-    indices_top = np.argsort(similitudes)[-top_k:][::-1]
+    # Ordenar por score
+    resultados.sort(key=lambda x: x['score'], reverse=True)
     
-    # Verificar que hay suficiente similitud (umbral mínimo)
-    if similitudes[indices_top[0]] < 0.3:
-        return "Lo siento, no encontré información relevante sobre tu consulta. ¿Podrías reformular tu pregunta?", 0.0
+    return resultados[:3]  # Top 3 resultados
+
+# Función para generar respuesta con el modelo
+def generar_respuesta(pregunta, contexto_relevante):
+    """Genera una respuesta usando el modelo conversacional."""
+    if not generator:
+        return "El modelo no está disponible. Por favor, recarga la página."
     
-    # Construir respuesta combinando las mejores coincidencias
-    respuestas = []
-    for idx in indices_top:
-        if similitudes[idx] > 0.3:  # Solo incluir respuestas relevantes
-            respuestas.append(df_limpio.iloc[idx][col_respuesta])
-    
-    # Si hay múltiples respuestas similares, combinarlas
-    if len(respuestas) > 1:
-        respuesta_final = "Encontré esta información relevante:\n\n" + "\n\n".join([f"• {resp}" for resp in respuestas[:2]])
+    # Si hay contexto relevante, usarlo
+    if contexto_relevante:
+        # Construir prompt con contexto
+        contexto_texto = "\n".join([f"P: {r['pregunta']}\nR: {r['respuesta']}" for r in contexto_relevante])
+        
+        prompt = f"""Basándote en la siguiente información, responde la pregunta del usuario de manera clara y concisa.
+
+Información disponible:
+{contexto_texto}
+
+Pregunta del usuario: {pregunta}
+
+Respuesta:"""
     else:
-        respuesta_final = respuestas[0]
+        # Pregunta directa sin contexto
+        prompt = f"Responde esta pregunta de manera útil: {pregunta}"
     
-    return respuesta_final, similitudes[indices_top[0]]
+    try:
+        # Generar respuesta
+        respuesta = generator(
+            prompt,
+            max_length=200,
+            min_length=20,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9,
+            num_return_sequences=1
+        )
+        
+        return respuesta[0]['generated_text'].strip()
+    except Exception as e:
+        return f"Error al generar respuesta: {e}"
 
 # Título de la aplicación
-st.title("🤖 Chatbot IA - Asistente Virtual")
-st.markdown("### Carga tu archivo Excel y conversa con tus datos")
+st.title("🤖 Chatbot IA - Asistente Conversacional")
+st.markdown("### Powered by FLAN-T5 - Modelo conversacional preentrenado")
 
 # Sidebar para configuración
 st.sidebar.header("⚙️ Configuración")
+
+# Información del modelo
+with st.sidebar.expander("ℹ️ Sobre el modelo"):
+    st.markdown("""
+    **Modelo:** Google FLAN-T5 Base
+    
+    - ✅ Entrenado en conversaciones
+    - ✅ Entiende contexto
+    - ✅ Genera respuestas naturales
+    - ✅ Multilingüe (incluye español)
+    - ✅ Sin APIs externas
+    """)
 
 # Cargar archivo Excel
 archivo_subido = st.sidebar.file_uploader(
     "Sube tu archivo Excel (.xlsx, .xls)",
     type=['xlsx', 'xls'],
-    help="El archivo debe contener columnas con preguntas/temas y respuestas"
+    help="El archivo debe contener preguntas/temas y respuestas"
 )
 
 # Inicializar variables de sesión
 if 'historial' not in st.session_state:
     st.session_state.historial = []
 
-if 'base_conocimiento' not in st.session_state:
-    st.session_state.base_conocimiento = None
+if 'conocimiento' not in st.session_state:
+    st.session_state.conocimiento = None
 
 # Procesar archivo si se cargó
 if archivo_subido is not None:
@@ -134,31 +202,43 @@ if archivo_subido is not None:
         )
         
         # Botón para procesar
-        if st.sidebar.button("🚀 Procesar y Activar Chatbot"):
-            with st.spinner("Procesando datos y generando embeddings..."):
-                textos, embeddings, df_limpio = crear_base_conocimiento(df, col_pregunta, col_respuesta)
+        if st.sidebar.button("🚀 Activar Chatbot"):
+            with st.spinner("Procesando base de conocimiento..."):
+                conocimiento = crear_contexto(df, col_pregunta, col_respuesta)
                 
-                if textos is not None:
-                    st.session_state.base_conocimiento = {
-                        'textos': textos,
-                        'embeddings': embeddings,
-                        'df': df_limpio,
-                        'col_respuesta': col_respuesta
-                    }
-                    st.sidebar.success("✅ ¡Chatbot activado y listo!")
+                if conocimiento:
+                    st.session_state.conocimiento = conocimiento
+                    st.sidebar.success(f"✅ ¡Chatbot activado con {len(conocimiento)} entradas!")
                     st.balloons()
+
+# Configuraciones adicionales
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎛️ Parámetros")
+
+usar_contexto = st.sidebar.checkbox(
+    "Usar base de conocimiento",
+    value=True,
+    help="Si está activado, el chatbot buscará primero en tu Excel"
+)
+
+modo_conversacion = st.sidebar.radio(
+    "Modo de respuesta:",
+    ["Con contexto (recomendado)", "Solo modelo IA", "Híbrido"],
+    help="Híbrido combina búsqueda en Excel + generación IA"
+)
 
 # Mostrar preview de datos
 if archivo_subido is not None and df is not None:
     with st.expander("📊 Vista previa de los datos"):
         st.dataframe(df.head(10))
+        st.info(f"Total de registros: {len(df)}")
 
 # Área de chat
 st.markdown("---")
 
-# Verificar si el chatbot está activo
-if st.session_state.base_conocimiento is not None:
-    st.success("✅ Chatbot activo - ¡Haz tu pregunta!")
+# Verificar si el modelo está cargado
+if generator is not None:
+    st.success("✅ Modelo conversacional cargado - ¡Hazme una pregunta!")
     
     # Formulario de chat
     with st.form(key='chat_form', clear_on_submit=True):
@@ -167,7 +247,7 @@ if st.session_state.base_conocimiento is not None:
         with col1:
             pregunta = st.text_input(
                 "Tu pregunta:",
-                placeholder="Escribe tu consulta aquí...",
+                placeholder="¿En qué puedo ayudarte hoy?",
                 label_visibility="collapsed"
             )
         
@@ -179,67 +259,93 @@ if st.session_state.base_conocimiento is not None:
         # Agregar pregunta al historial
         st.session_state.historial.append({"role": "user", "content": pregunta})
         
-        # Buscar respuesta
-        base = st.session_state.base_conocimiento
-        respuesta, confianza = buscar_respuesta(
-            pregunta,
-            base['textos'],
-            base['embeddings'],
-            base['df'],
-            base['col_respuesta']
-        )
-        
-        # Agregar respuesta al historial
-        st.session_state.historial.append({
-            "role": "assistant",
-            "content": respuesta,
-            "confianza": confianza
-        })
+        with st.spinner("Pensando..."):
+            # Buscar en base de conocimiento si existe
+            contexto_relevante = []
+            if usar_contexto and st.session_state.conocimiento:
+                contexto_relevante = buscar_en_base(pregunta, st.session_state.conocimiento)
+            
+            # Generar respuesta según el modo
+            if modo_conversacion == "Con contexto (recomendado)" and contexto_relevante:
+                # Respuesta directa del Excel si hay coincidencia exacta
+                respuesta = contexto_relevante[0]['respuesta']
+                tipo_respuesta = "📚 Base de conocimiento"
+            elif modo_conversacion == "Solo modelo IA":
+                # Solo usar el modelo
+                respuesta = generar_respuesta(pregunta, [])
+                tipo_respuesta = "🤖 Generado por IA"
+            else:
+                # Modo híbrido: combinar contexto + modelo
+                respuesta = generar_respuesta(pregunta, contexto_relevante)
+                tipo_respuesta = "🔄 Híbrido (Contexto + IA)"
+            
+            # Agregar respuesta al historial
+            st.session_state.historial.append({
+                "role": "assistant",
+                "content": respuesta,
+                "tipo": tipo_respuesta,
+                "contexto": len(contexto_relevante) > 0
+            })
     
     # Mostrar historial de chat
     st.markdown("### 💬 Conversación")
+    
+    if not st.session_state.historial:
+        st.info("👋 ¡Hola! Soy tu asistente virtual. Hazme cualquier pregunta.")
+    
     for mensaje in st.session_state.historial:
         if mensaje["role"] == "user":
-            with st.chat_message("user"):
+            with st.chat_message("user", avatar="👤"):
                 st.write(mensaje["content"])
         else:
-            with st.chat_message("assistant"):
+            with st.chat_message("assistant", avatar="🤖"):
                 st.write(mensaje["content"])
-                if "confianza" in mensaje:
-                    st.caption(f"Confianza: {mensaje['confianza']:.2%}")
+                st.caption(mensaje.get("tipo", ""))
     
-    # Botón para limpiar historial
-    if st.button("🗑️ Limpiar conversación"):
-        st.session_state.historial = []
-        st.rerun()
+    # Botones de control
+    col1, col2 = st.columns([1, 5])
+    with col1:
+        if st.button("🗑️ Limpiar chat"):
+            st.session_state.historial = []
+            st.rerun()
 
 else:
-    st.info("👆 Sube un archivo Excel y configura el chatbot para comenzar")
+    st.error("❌ Error al cargar el modelo conversacional. Verifica las dependencias.")
+
+# Instrucciones
+with st.expander("📖 ¿Cómo funciona este chatbot?"):
+    st.markdown("""
+    ### 🎯 **Modos de operación:**
     
-    # Mostrar instrucciones
-    with st.expander("📖 ¿Cómo usar este chatbot?"):
-        st.markdown("""
-        **Pasos para usar el chatbot:**
-        
-        1. **Sube tu archivo Excel** desde el panel lateral
-        2. **Selecciona las columnas** que contienen:
-           - Preguntas o temas (puede ser: FAQ, Productos, Servicios, etc.)
-           - Respuestas o información relacionada
-        3. **Haz clic en "Procesar y Activar Chatbot"**
-        4. **¡Listo!** Ya puedes hacer preguntas
-        
-        **Formato recomendado del Excel:**
-        - **Columna A**: Pregunta, Tema, Producto, etc.
-        - **Columna B**: Respuesta, Descripción, Información, etc.
-        
-        **Ejemplos de uso:**
-        - Base de conocimientos FAQ
-        - Catálogo de productos
-        - Información de servicios
-        - Políticas de empresa
-        - Guías técnicas
-        """)
+    1. **Con contexto (recomendado):**
+       - Busca primero en tu base de datos Excel
+       - Responde directamente si encuentra coincidencias
+       - Rápido y preciso para info específica
+    
+    2. **Solo modelo IA:**
+       - Usa únicamente el modelo FLAN-T5
+       - Genera respuestas conversacionales
+       - Ideal para preguntas generales
+    
+    3. **Híbrido:**
+       - Combina búsqueda en Excel + generación IA
+       - El modelo reformula y enriquece las respuestas del Excel
+       - Balance perfecto entre precisión y naturalidad
+    
+    ### 📋 **Formato Excel recomendado:**
+    
+    | Pregunta | Respuesta |
+    |----------|-----------|
+    | ¿Cuál es el horario? | Lunes a viernes 9-18h |
+    | ¿Dónde están ubicados? | Av. Principal 123 |
+    
+    ### 💡 **Ventajas:**
+    - ✅ Modelo conversacional preentrenado (FLAN-T5)
+    - ✅ Sin APIs externas ni costos adicionales
+    - ✅ Funciona offline después de la primera carga
+    - ✅ Genera respuestas naturales y contextuales
+    """)
 
 # Footer
 st.markdown("---")
-st.caption("🤖 Chatbot IA con Sentence Transformers | Sin APIs externas")
+st.caption("🤖 Chatbot con Google FLAN-T5 | Modelo conversacional preentrenado | Sin APIs externas")
