@@ -2,135 +2,189 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import time
+import json
+import os
+from pathlib import Path
 
 # Configuración de la página
 st.set_page_config(
     page_title="Asistente Virtual",
     page_icon="💬",
     layout="centered",
-    initial_sidebar_state="expanded"  # Cambiado a expanded
+    initial_sidebar_state="collapsed"
 )
 
-# CSS personalizado para look profesional
-st.markdown("""
+# ===== FUNCIONES DE CARGA DE CONFIGURACIÓN =====
+
+@st.cache_data
+def cargar_configuracion():
+    """Carga la configuración desde config.json"""
+    try:
+        with open('config.json', 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        return config
+    except FileNotFoundError:
+        st.error("⚠️ No se encontró config.json")
+        return {
+            'negocio': {
+                'nombre': 'Mi Negocio',
+                'emoji': '🏪',
+                'tagline': 'Estamos aquí para ayudarte',
+                'logo': None
+            },
+            'colores': {
+                'primario': '#667eea',
+                'secundario': '#764ba2',
+                'fondo_usuario': '#667eea',
+                'fondo_bot': '#f1f3f4'
+            },
+            'mensajes': {
+                'bienvenida': '¡Hola! 👋 Bienvenido. Soy tu asistente virtual. ¿En qué puedo ayudarte?',
+                'sugerencias': [
+                    '📍 ¿Dónde están ubicados?',
+                    '🕐 ¿Cuál es el horario?',
+                    '💰 ¿Cuáles son los precios?',
+                    '📞 ¿Cómo los contacto?'
+                ]
+            }
+        }
+
+@st.cache_data
+def cargar_base_conocimiento():
+    """Carga la base de conocimiento desde base_conocimiento.xlsx"""
+    try:
+        df = pd.read_excel('base_conocimiento.xlsx')
+        return df
+    except FileNotFoundError:
+        st.warning("⚠️ No se encontró base_conocimiento.xlsx")
+        return None
+    except Exception as e:
+        st.error(f"Error al cargar base de conocimiento: {e}")
+        return None
+
+def cargar_logo():
+    """Carga el logo desde la carpeta assets/"""
+    logo_path = 'assets/logo.png'
+    if os.path.exists(logo_path):
+        return logo_path
+    return None
+
+# ===== CARGAR CONFIGURACIONES =====
+config = cargar_configuracion()
+base_conocimiento = cargar_base_conocimiento()
+logo_path = cargar_logo()
+
+# Extraer configuraciones
+negocio = config['negocio']
+colores = config['colores']
+mensajes_config = config['mensajes']
+
+# CSS personalizado con colores dinámicos
+st.markdown(f"""
 <style>
     /* Ocultar elementos de Streamlit */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
+    #MainMenu {{visibility: hidden;}}
+    footer {{visibility: hidden;}}
+    header {{visibility: hidden;}}
     
     /* Fondo y estilo general */
-    .stApp {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
+    .stApp {{
+        background: linear-gradient(135deg, {colores['primario']} 0%, {colores['secundario']} 100%);
+    }}
     
     /* Container del chat */
-    .chat-container {
+    .chat-container {{
         background: white;
         border-radius: 20px;
         padding: 20px;
         box-shadow: 0 10px 40px rgba(0,0,0,0.1);
         max-width: 600px;
         margin: 20px auto;
-    }
+    }}
     
     /* Header del negocio */
-    .business-header {
+    .business-header {{
         text-align: center;
         padding: 20px;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, {colores['primario']} 0%, {colores['secundario']} 100%);
         border-radius: 15px;
         color: white;
         margin-bottom: 20px;
-    }
+    }}
     
-    .business-logo {
+    .business-logo {{
         font-size: 50px;
         margin-bottom: 10px;
-    }
+    }}
     
-    .business-name {
+    .business-name {{
         font-size: 24px;
         font-weight: bold;
         margin: 0;
-    }
+    }}
     
-    .business-tagline {
+    .business-tagline {{
         font-size: 14px;
         opacity: 0.9;
         margin-top: 5px;
-    }
+    }}
     
     /* Mensajes */
-    .user-message {
-        background: #667eea;
+    .user-message {{
+        background: {colores['fondo_usuario']};
         color: white;
         padding: 12px 16px;
         border-radius: 18px 18px 4px 18px;
         margin: 10px 0;
         margin-left: 20%;
         box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-    }
+    }}
     
-    .bot-message {
-        background: #f1f3f4;
+    .bot-message {{
+        background: {colores['fondo_bot']};
         color: #333;
         padding: 12px 16px;
         border-radius: 18px 18px 18px 4px;
         margin: 10px 0;
         margin-right: 20%;
         box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-    }
+    }}
     
-    .message-time {
+    .message-time {{
         font-size: 10px;
         opacity: 0.6;
         margin-top: 4px;
-    }
-    
-    /* Botones de sugerencias */
-    .suggestion-btn {
-        background: white;
-        border: 2px solid #667eea;
-        color: #667eea;
-        padding: 10px 20px;
-        border-radius: 20px;
-        margin: 5px;
-        cursor: pointer;
-        display: inline-block;
-        font-size: 14px;
-    }
+    }}
     
     /* Input personalizado */
-    .stTextInput input {
+    .stTextInput input {{
         border-radius: 25px;
         border: 2px solid #e0e0e0;
         padding: 12px 20px;
-    }
+    }}
     
-    /* Typing indicator */
-    .typing-indicator {
-        display: inline-block;
-        padding: 10px;
-    }
+    /* Botón enviar */
+    .stButton button {{
+        border-radius: 25px;
+        background: {colores['primario']};
+        color: white;
+        border: none;
+        padding: 10px 20px;
+    }}
     
-    .typing-indicator span {
-        height: 8px;
-        width: 8px;
-        background-color: #667eea;
+    /* Logo personalizado */
+    .logo-container {{
+        text-align: center;
+        margin-bottom: 10px;
+    }}
+    
+    .logo-container img {{
+        max-width: 120px;
+        max-height: 120px;
         border-radius: 50%;
-        display: inline-block;
-        margin: 0 2px;
-        animation: bounce 1.4s infinite ease-in-out both;
-    }
-    
-    .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
-    .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
-    
-    @keyframes bounce {
-        0%, 80%, 100% { transform: scale(0); }
-        40% { transform: scale(1); }
-    }
+        border: 3px solid white;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -139,99 +193,39 @@ if 'mensajes' not in st.session_state:
     st.session_state.mensajes = []
     st.session_state.primera_visita = True
 
-if 'info_negocio' not in st.session_state:
-    st.session_state.info_negocio = {
-        'nombre': 'Mi Negocio',
-        'emoji': '🏪',
-        'tagline': 'Estamos aquí para ayudarte',
-        'activo': False
-    }
-
-# Sidebar para configuración del negocio (admin)
-with st.sidebar:
-    st.title("⚙️ Panel de Administración")
-    st.markdown("---")
-    
-    st.subheader("Información del Negocio")
-    
-    nombre_negocio = st.text_input(
-        "Nombre del negocio:",
-        value=st.session_state.info_negocio['nombre'],
-        placeholder="Ej: Restaurante El Buen Sabor"
-    )
-    
-    emoji_negocio = st.text_input(
-        "Emoji/Ícono:",
-        value=st.session_state.info_negocio['emoji'],
-        placeholder="🍕 🏪 ☕ 💼"
-    )
-    
-    tagline = st.text_input(
-        "Mensaje de bienvenida:",
-        value=st.session_state.info_negocio['tagline'],
-        placeholder="Tu satisfacción es nuestra prioridad"
-    )
-    
-    if st.button("💾 Guardar Configuración"):
-        st.session_state.info_negocio = {
-            'nombre': nombre_negocio,
-            'emoji': emoji_negocio,
-            'tagline': tagline,
-            'activo': True
-        }
-        st.success("✅ Configuración guardada!")
-    
-    st.markdown("---")
-    st.subheader("📊 Base de Conocimiento")
-    
-    archivo_subido = st.file_uploader(
-        "Subir Excel con información:",
-        type=['xlsx', 'xls'],
-        help="Formato: Pregunta | Respuesta"
-    )
-    
-    if archivo_subido:
-        try:
-            df = pd.read_excel(archivo_subido)
-            st.success(f"✅ {len(df)} entradas cargadas")
-            
-            # Guardar en sesión
-            if 'base_conocimiento' not in st.session_state:
-                st.session_state.base_conocimiento = df
-            
-            with st.expander("Ver datos"):
-                st.dataframe(df.head())
-        except Exception as e:
-            st.error(f"Error: {e}")
-    
-    st.markdown("---")
-    
-    if st.button("🔄 Reiniciar Chat"):
-        st.session_state.mensajes = []
-        st.session_state.primera_visita = True
-        st.rerun()
-    
-    st.markdown("---")
-    st.caption("💡 Vista de cliente: Colapsa este panel")
-
-# ==== INTERFAZ PRINCIPAL (Lo que ve el cliente) ====
+# ==== INTERFAZ PRINCIPAL ====
 
 # Header del negocio
-info = st.session_state.info_negocio
+if logo_path:
+    st.markdown(f"""
+    <div class="business-header">
+        <div class="logo-container">
+            <img src="data:image/png;base64,{get_image_base64(logo_path)}" alt="Logo">
+        </div>
+        <h1 class="business-name">{negocio['nombre']}</h1>
+        <p class="business-tagline">{negocio['tagline']}</p>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown(f"""
+    <div class="business-header">
+        <div class="business-logo">{negocio['emoji']}</div>
+        <h1 class="business-name">{negocio['nombre']}</h1>
+        <p class="business-tagline">{negocio['tagline']}</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-st.markdown(f"""
-<div class="business-header">
-    <div class="business-logo">{info['emoji']}</div>
-    <h1 class="business-name">{info['nombre']}</h1>
-    <p class="business-tagline">{info['tagline']}</p>
-</div>
-""", unsafe_allow_html=True)
+# Función para convertir imagen a base64
+def get_image_base64(image_path):
+    import base64
+    with open(image_path, "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode()
 
 # Mensaje de bienvenida automático
 if st.session_state.primera_visita:
     st.session_state.mensajes.append({
         'tipo': 'bot',
-        'contenido': f"¡Hola! 👋 Bienvenido a {info['nombre']}. Soy tu asistente virtual y estoy aquí para ayudarte. ¿En qué puedo asistirte hoy?",
+        'contenido': mensajes_config['bienvenida'],
         'hora': datetime.now().strftime("%H:%M")
     })
     st.session_state.primera_visita = False
@@ -256,20 +250,13 @@ for msg in st.session_state.mensajes:
         </div>
         """, unsafe_allow_html=True)
 
-# Sugerencias rápidas (opcional)
-if len(st.session_state.mensajes) <= 1:
+# Sugerencias rápidas
+if len(st.session_state.mensajes) <= 1 and mensajes_config['sugerencias']:
     st.markdown("### 💡 Preguntas frecuentes:")
     
     col1, col2 = st.columns(2)
     
-    sugerencias = [
-        "📍 ¿Dónde están ubicados?",
-        "🕐 ¿Cuál es el horario?",
-        "💰 ¿Cuáles son los precios?",
-        "📞 ¿Cómo los contacto?"
-    ]
-    
-    for i, sugerencia in enumerate(sugerencias):
+    for i, sugerencia in enumerate(mensajes_config['sugerencias']):
         col = col1 if i % 2 == 0 else col2
         with col:
             if st.button(sugerencia, key=f"sug_{i}", use_container_width=True):
@@ -280,8 +267,8 @@ if len(st.session_state.mensajes) <= 1:
                     'hora': datetime.now().strftime("%H:%M")
                 })
                 
-                # Respuesta automática (aquí irá la IA después)
-                respuesta = f"Gracias por tu pregunta sobre: {sugerencia}. Pronto conectaré esta respuesta con nuestra base de datos."
+                # Buscar respuesta en base de conocimiento
+                respuesta = buscar_respuesta(sugerencia, base_conocimiento)
                 
                 st.session_state.mensajes.append({
                     'tipo': 'bot',
@@ -291,6 +278,39 @@ if len(st.session_state.mensajes) <= 1:
                 st.rerun()
 
 st.markdown("</div>", unsafe_allow_html=True)
+
+# Función de búsqueda simple
+def buscar_respuesta(pregunta, df):
+    """Busca una respuesta en la base de conocimiento"""
+    if df is None or df.empty:
+        return "Disculpa, aún estoy aprendiendo. Por favor, intenta con otra pregunta o contacta directamente con el negocio."
+    
+    try:
+        # Búsqueda simple en la primera columna
+        pregunta_lower = pregunta.lower()
+        
+        for idx, row in df.iterrows():
+            pregunta_base = str(row.iloc[0]).lower()
+            
+            # Buscar coincidencias
+            if pregunta_lower in pregunta_base or pregunta_base in pregunta_lower:
+                return str(row.iloc[1])
+        
+        # Si no encuentra coincidencia exacta, buscar palabras clave
+        palabras_pregunta = set(pregunta_lower.split())
+        
+        for idx, row in df.iterrows():
+            pregunta_base = str(row.iloc[0]).lower()
+            palabras_base = set(pregunta_base.split())
+            
+            # Si hay al menos 2 palabras en común
+            if len(palabras_pregunta.intersection(palabras_base)) >= 2:
+                return str(row.iloc[1])
+        
+        return "No encontré información específica sobre eso. ¿Podrías reformular tu pregunta o elegir una de las opciones sugeridas?"
+    
+    except Exception as e:
+        return f"Disculpa, ocurrió un error. Por favor intenta nuevamente."
 
 # Input del usuario
 st.markdown("---")
@@ -306,7 +326,7 @@ with col1:
     )
 
 with col2:
-    enviar = st.button("Enviar", use_container_width=True, type="primary")
+    enviar = st.button("📤", use_container_width=True, type="primary")
 
 # Procesar mensaje
 if enviar and mensaje_usuario:
@@ -317,21 +337,10 @@ if enviar and mensaje_usuario:
         'hora': datetime.now().strftime("%H:%M")
     })
     
-    # Simular "escribiendo..." (después aquí irá la IA)
+    # Buscar respuesta
     with st.spinner("Escribiendo..."):
-        time.sleep(1)
-        
-        # Respuesta placeholder (aquí conectarás la IA)
-        respuesta_bot = "Gracias por tu mensaje. Estoy en desarrollo y pronto podré responderte con información precisa sobre nuestro negocio. 🤖"
-        
-        # Si hay base de conocimiento, intentar buscar
-        if 'base_conocimiento' in st.session_state:
-            df = st.session_state.base_conocimiento
-            # Búsqueda simple (mejorarás esto con IA)
-            resultados = df[df.iloc[:, 0].str.contains(mensaje_usuario, case=False, na=False)]
-            
-            if not resultados.empty:
-                respuesta_bot = resultados.iloc[0, 1]  # Primera respuesta encontrada
+        time.sleep(0.5)  # Simular pensamiento
+        respuesta_bot = buscar_respuesta(mensaje_usuario, base_conocimiento)
     
     st.session_state.mensajes.append({
         'tipo': 'bot',
@@ -343,8 +352,8 @@ if enviar and mensaje_usuario:
 
 # Footer
 st.markdown("---")
-st.markdown("""
+st.markdown(f"""
 <div style='text-align: center; opacity: 0.6; font-size: 12px;'>
-    Powered by Asistente Virtual IA • Desarrollado para tu negocio
+    Powered by {negocio['nombre']} • Asistente Virtual IA
 </div>
 """, unsafe_allow_html=True)
